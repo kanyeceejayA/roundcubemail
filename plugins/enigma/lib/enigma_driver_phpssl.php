@@ -4,11 +4,12 @@
  +-------------------------------------------------------------------------+
  | S/MIME driver for the Enigma Plugin                                     |
  |                                                                         |
- | Copyright (C) The Roundcube Dev Team                                    |
+ | Copyright (C) 2010-2015 The Roundcube Dev Team                          |
  |                                                                         |
  | Licensed under the GNU General Public License version 3 or              |
  | any later version with exceptions for skins & plugins.                  |
  | See the README file for a full license statement.                       |
+ |                                                                         |
  +-------------------------------------------------------------------------+
  | Author: Aleksander Machniak <alec@alec.pl>                              |
  +-------------------------------------------------------------------------+
@@ -19,6 +20,7 @@ class enigma_driver_phpssl extends enigma_driver
     private $rc;
     private $homedir;
     private $user;
+    private $cainfo;
 
     function __construct($user)
     {
@@ -36,6 +38,7 @@ class enigma_driver_phpssl extends enigma_driver
     function init()
     {
         $homedir = $this->rc->config->get('enigma_smime_homedir', INSTALL_PATH . '/plugins/enigma/home');
+        $this->cainfo = $this->rc->config->get('enigma_smime_ca', array());
 
         if (!$homedir)
             return new enigma_error(enigma_error::INTERNAL,
@@ -70,7 +73,7 @@ class enigma_driver_phpssl extends enigma_driver
     {
     }
 
-    function decrypt($text, $keys = [], &$signature = null)
+    function decrypt($text, $keys = array(), &$signature = null)
     {
     }
 
@@ -81,8 +84,9 @@ class enigma_driver_phpssl extends enigma_driver
     function verify($struct, $message)
     {
         // use common temp dir
-        $msg_file  = rcube_utils::temp_filename('enigmsg');
-        $cert_file = rcube_utils::temp_filename('enigcrt');
+        $temp_dir  = $this->rc->config->get('temp_dir');
+        $msg_file  = tempnam($temp_dir, 'rcmMsg');
+        $cert_file = tempnam($temp_dir, 'rcmCert');
 
         $fh = fopen($msg_file, "w");
         if ($struct->mime_id) {
@@ -94,10 +98,15 @@ class enigma_driver_phpssl extends enigma_driver
         fclose($fh);
 
         // @TODO: use stored certificates
-
-        // try with certificate verification
-        $sig      = openssl_pkcs7_verify($msg_file, 0, $cert_file);
+        // try with global config'd certificates
+        $sig      = openssl_pkcs7_verify($msg_file, 0, $cert_file, $this->cainfo);
         $validity = true;
+
+        if ($sig !== true) {
+            // try with server trusted certificate verification
+            $sig      = openssl_pkcs7_verify($msg_file, 0, $cert_file);
+            $validity = enigma_error::SERVER_VERIFIED;
+        }
 
         if ($sig !== true) {
             // try without certificate verification
@@ -120,11 +129,11 @@ class enigma_driver_phpssl extends enigma_driver
         return $sig;
     }
 
-    public function import($content, $isfile = false, $passwords = [])
+    public function import($content, $isfile = false, $passwords = array())
     {
     }
 
-    public function export($key, $with_private = false, $passwords = [])
+    public function export($key, $with_private = false, $passwords = array())
     {
     }
 
@@ -163,11 +172,43 @@ class enigma_driver_phpssl extends enigma_driver
      */
     private function parse_key($key)
     {
+/*
+        $ekey = new enigma_key();
+
+        foreach ($key->getUserIds() as $idx => $user) {
+            $id = new enigma_userid();
+            $id->name    = $user->getName();
+            $id->comment = $user->getComment();
+            $id->email   = $user->getEmail();
+            $id->valid   = $user->isValid();
+            $id->revoked = $user->isRevoked();
+
+            $ekey->users[$idx] = $id;
+        }
+        
+        $ekey->name = trim($ekey->users[0]->name . ' <' . $ekey->users[0]->email . '>');
+
+        foreach ($key->getSubKeys() as $idx => $subkey) {
+                $skey = new enigma_subkey();
+                $skey->id          = $subkey->getId();
+                $skey->revoked     = $subkey->isRevoked();
+                $skey->created     = $subkey->getCreationDate();
+                $skey->expires     = $subkey->getExpirationDate();
+                $skey->fingerprint = $subkey->getFingerprint();
+                $skey->has_private = $subkey->hasPrivate();
+
+                $ekey->subkeys[$idx] = $skey;
+        };
+        
+        $ekey->id = $ekey->subkeys[0]->id;
+        
+        return $ekey;
+*/
     }
 
     private function get_openssl_error()
     {
-        $tmp = [];
+        $tmp = array();
         while ($errorstr = openssl_error_string()) {
             $tmp[] = $errorstr;
         }
@@ -194,6 +235,8 @@ class enigma_driver_phpssl extends enigma_driver
         $data->name        = $cert['subject']['CN'];
 //        $data->comment     = '';
         $data->email       = $cert['subject']['emailAddress'];
+
+        rcube::write_log('errors', 'Decrypted sig: ' . $data->name);
 
         return $data;
     }
